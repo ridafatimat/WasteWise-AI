@@ -1,0 +1,9 @@
+# Python environments and generated local data
+backend/.venv/
+backend/*.db
+backend/.pytest_cache/
+backend/**/__pycache__/
+*.py[cod]
+
+# Local configuration
+backend/.env

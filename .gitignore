@@ -7,3 +7,4 @@ backend/**/__pycache__/
 
 # Local configuration
 backend/.env
+backend/artifacts/

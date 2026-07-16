@@ -33,6 +33,11 @@ def test_pantry_event_and_rescue_mode():
     rescue = client.get("/api/v1/dashboard/rescue-mode", headers=headers)
     assert rescue.status_code == 200
     assert rescue.json()["items"][0]["product_name"] == "Milk"
+    prediction = client.get("/api/v1/predictions/waste-risk", headers=headers)
+    assert prediction.status_code == 200
+    payload = prediction.json()[0]
+    assert payload["model_version"] in {"rules-v1", "logistic-regression-v1", "xgboost-v1"}
+    assert 0 <= payload["risk_score"] <= 1
 
 
 def test_rejects_expiry_before_purchase():

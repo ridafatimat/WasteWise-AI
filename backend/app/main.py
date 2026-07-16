@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from .database import Base, engine, get_db
 from .auth import create_access_token, get_current_household_id, get_current_user, hash_password, verify_password
 from .models import Household, HouseholdMember, InventoryEvent, PantryItem, User
+from .ml import predict_risk
 from .schemas import EventCreate, EventRead, LoginRequest, PantryItemCreate, PantryItemRead, PantryItemUpdate, RegisterRequest, TokenRead, UserRead
 from .services import get_item_or_404, record_event, risk_for, update_item
 
@@ -125,3 +126,14 @@ def rescue_mode(household_id: str = Depends(get_current_household_id), db: Sessi
         names = ", ".join(x["product_name"] for x in items[:3])
         actions.append({"type": "recipe", "title": f"Use {names} soon", "reason": "Prioritizes pantry items approaching expiry"})
     return {"summary": f"{len(items)} items need attention", "estimated_value_at_risk": {"amount": round(value, 2), "currency": "PKR"}, "items": items, "actions": actions}
+
+
+@app.get("/api/v1/predictions/waste-risk")
+def waste_risk_predictions(household_id: str = Depends(get_current_household_id), db: Session = Depends(get_db)):
+    predictions = []
+    for item in db.query(PantryItem).filter_by(status="active", household_id=household_id).all():
+        score, model_version, reasons = predict_risk(item, date.today())
+        predictions.append({"pantry_item_id": item.id, "product_name": item.product_name, "risk_score": score,
+                            "risk_band": "high" if score >= .75 else "medium" if score >= .45 else "low",
+                            "model_version": model_version, "reasons": reasons})
+    return sorted(predictions, key=lambda prediction: prediction["risk_score"], reverse=True)

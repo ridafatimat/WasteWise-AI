@@ -192,6 +192,19 @@ function ReceiptsPage() {
     onSuccess: async (data) => {
       setResult(data);
 
+      const hasEdibleItems =
+        data.summary.items_created > 0 ||
+        data.pantry_changes.some(
+          (change) => change.action === "created",
+        );
+
+      if (!hasEdibleItems) {
+        toast.info(
+          "Receipt scanned, but no edible pantry items were found.",
+        );
+        return;
+      }
+
       toast.success(
         `${data.summary.items_created} new pantry batch${
           data.summary.items_created === 1 ? "" : "es"
@@ -208,6 +221,12 @@ function ReceiptsPage() {
   });
 
   const isProcessing = mutation.isPending;
+  const hasEdibleItems =
+    result !== null &&
+    (result.summary.items_created > 0 ||
+      result.pantry_changes.some(
+        (change) => change.action === "created",
+      ));
 
   const clearSelection = () => {
     if (previewUrl) {
@@ -625,33 +644,76 @@ function ReceiptsPage() {
               animate={{ opacity: 1, y: 0 }}
               className="space-y-5"
             >
-              <div className="relative overflow-hidden rounded-[26px] border border-emerald-500/25 bg-emerald-500/[0.06] p-5 sm:p-6">
-                <div className="pointer-events-none absolute -right-16 -top-20 h-48 w-48 rounded-full bg-emerald-500/10 blur-3xl" />
+              <div
+                className={cn(
+                  "relative overflow-hidden rounded-[26px] border p-5 sm:p-6",
+                  hasEdibleItems
+                    ? "border-emerald-500/25 bg-emerald-500/[0.06]"
+                    : "border-amber-500/25 bg-amber-500/[0.06]",
+                )}
+              >
+                <div
+                  className={cn(
+                    "pointer-events-none absolute -right-16 -top-20 h-48 w-48 rounded-full blur-3xl",
+                    hasEdibleItems
+                      ? "bg-emerald-500/10"
+                      : "bg-amber-500/10",
+                  )}
+                />
                 <div className="relative flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                   <div className="flex items-start gap-3">
-                    <div className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-emerald-500/15 text-emerald-500">
-                      <CheckCircle2 className="h-5 w-5" />
+                    <div
+                      className={cn(
+                        "grid h-11 w-11 shrink-0 place-items-center rounded-2xl",
+                        hasEdibleItems
+                          ? "bg-emerald-500/15 text-emerald-500"
+                          : "bg-amber-500/15 text-amber-500",
+                      )}
+                    >
+                      {hasEdibleItems ? (
+                        <CheckCircle2 className="h-5 w-5" />
+                      ) : (
+                        <AlertTriangle className="h-5 w-5" />
+                      )}
                     </div>
                     <div>
                       <h3 className="font-semibold sm:text-lg">
-                        Receipt processed successfully
+                        {hasEdibleItems
+                          ? "Receipt processed successfully"
+                          : "No edible items found"}
                       </h3>
                       <p className="mt-1 text-sm text-muted-foreground">
-                        {result.summary.items_created} new batch{result.summary.items_created === 1 ? "" : "es"} added
-                        {result.summary.items_skipped > 0
-                          ? ` · ${result.summary.items_skipped} skipped`
-                          : ""}.
+                        {hasEdibleItems ? (
+                          <>
+                            {result.summary.items_created} new batch
+                            {result.summary.items_created === 1 ? "" : "es"} added
+                            {result.summary.items_skipped > 0
+                              ? ` · ${result.summary.items_skipped} skipped`
+                              : ""}.
+                          </>
+                        ) : (
+                          <>
+                            The receipt was read successfully, but it only
+                            contains non-food products. Nothing was added to
+                            Smart Pantry.
+                          </>
+                        )}
                       </p>
                     </div>
                   </div>
 
                   <div className="flex flex-wrap gap-2">
-                    <Button asChild className="rounded-xl bg-gradient-pink text-white">
-                      <Link to="/pantry">
-                        Open Smart Pantry
-                        <ArrowRight className="ml-2 h-4 w-4" />
-                      </Link>
-                    </Button>
+                    {hasEdibleItems && (
+                      <Button
+                        asChild
+                        className="rounded-xl bg-gradient-pink text-white"
+                      >
+                        <Link to="/pantry">
+                          Open Smart Pantry
+                          <ArrowRight className="ml-2 h-4 w-4" />
+                        </Link>
+                      </Button>
+                    )}
                     <Button
                       type="button"
                       variant="outline"
@@ -699,11 +761,27 @@ function ReceiptsPage() {
                   tone="warning"
                 />
                 <SummaryCard
-                  icon={PackageCheck}
-                  label="New batches"
+                  icon={
+                    hasEdibleItems
+                      ? PackageCheck
+                      : AlertTriangle
+                  }
+                  label={
+                    hasEdibleItems
+                      ? "New batches"
+                      : "Pantry items"
+                  }
                   value={`${result.summary.items_created}`}
-                  note={`${result.summary.items_skipped} skipped`}
-                  tone="success"
+                  note={
+                    hasEdibleItems
+                      ? `${result.summary.items_skipped} skipped`
+                      : "Nothing added"
+                  }
+                  tone={
+                    hasEdibleItems
+                      ? "success"
+                      : "warning"
+                  }
                 />
               </div>
 
@@ -791,66 +869,103 @@ function ReceiptsPage() {
                           Pantry sync
                         </p>
                         <h3 className="mt-2 font-semibold">
-                          Batches created
+                          {hasEdibleItems
+                            ? "Batches created"
+                            : "No pantry batches created"}
                         </h3>
                         <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                          Every purchase keeps its own quantity, purchase date
-                          and expiry date.
+                          {hasEdibleItems
+                            ? "Every edible purchase keeps its own quantity, purchase date and expiry date."
+                            : "Non-food products are ignored and are not added to Smart Pantry."}
                         </p>
                       </div>
-                      <div className="rounded-2xl bg-primary/10 p-3 text-primary">
-                        <PackageCheck className="h-5 w-5" />
+                      <div
+                        className={cn(
+                          "rounded-2xl p-3",
+                          hasEdibleItems
+                            ? "bg-primary/10 text-primary"
+                            : "bg-amber-500/10 text-amber-500",
+                        )}
+                      >
+                        {hasEdibleItems ? (
+                          <PackageCheck className="h-5 w-5" />
+                        ) : (
+                          <AlertTriangle className="h-5 w-5" />
+                        )}
                       </div>
                     </div>
 
-                    <div className="mt-5 max-h-[520px] space-y-3 overflow-y-auto pr-1">
-                      {result.pantry_changes.map((change, index) => (
-                        <div
-                          key={`${
-                            change.pantry_item_id ??
-                            change.product_name
-                          }-${index}`}
-                          className="rounded-2xl border border-border/70 bg-background/35 p-4"
-                        >
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0">
-                              <p className="truncate text-sm font-semibold">
-                                {change.product_name}
-                              </p>
-                              <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                                {formatChangeQuantity(change)} · Expires {formatDate(change.expiry_date)}
-                              </p>
+                    {hasEdibleItems ? (
+                      <div className="mt-5 max-h-[520px] space-y-3 overflow-y-auto pr-1">
+                        {result.pantry_changes.map((change, index) => (
+                          <div
+                            key={`${
+                              change.pantry_item_id ??
+                              change.product_name
+                            }-${index}`}
+                            className="rounded-2xl border border-border/70 bg-background/35 p-4"
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <p className="truncate text-sm font-semibold">
+                                  {change.product_name}
+                                </p>
+                                <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                                  {formatChangeQuantity(change)} · Expires {formatDate(change.expiry_date)}
+                                </p>
+                              </div>
+
+                              <span
+                                className={cn(
+                                  "shrink-0 rounded-full px-2.5 py-1 text-[10px] font-semibold capitalize",
+                                  change.action === "created"
+                                    ? "bg-emerald-500/10 text-emerald-500"
+                                    : change.action === "skipped"
+                                      ? "bg-amber-500/10 text-amber-500"
+                                      : "bg-primary/10 text-primary",
+                                )}
+                              >
+                                {change.action === "created"
+                                  ? "New batch"
+                                  : change.action}
+                              </span>
                             </div>
-
-                            <span
-                              className={cn(
-                                "shrink-0 rounded-full px-2.5 py-1 text-[10px] font-semibold capitalize",
-                                change.action === "created"
-                                  ? "bg-emerald-500/10 text-emerald-500"
-                                  : change.action === "skipped"
-                                    ? "bg-amber-500/10 text-amber-500"
-                                    : "bg-primary/10 text-primary",
-                              )}
-                            >
-                              {change.action === "created"
-                                ? "New batch"
-                                : change.action}
-                            </span>
                           </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="mt-5 rounded-2xl border border-amber-500/20 bg-amber-500/[0.05] p-5 text-center">
+                        <div className="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-amber-500/10 text-amber-500">
+                          <Package className="h-5 w-5" />
                         </div>
-                      ))}
-                    </div>
+                        <p className="mt-3 text-sm font-semibold">
+                          Nothing added to Smart Pantry
+                        </p>
+                        <p className="mx-auto mt-1 max-w-sm text-xs leading-5 text-muted-foreground">
+                          WasteWise found receipt products, but none of them
+                          were edible pantry items.
+                        </p>
+                      </div>
+                    )}
 
-                    <div className="mt-5 grid gap-2 sm:grid-cols-2 xl:grid-cols-1">
-                      <Button
-                        asChild
-                        className="rounded-xl bg-gradient-pink text-white"
-                      >
-                        <Link to="/pantry">
-                          Open Smart Pantry
-                          <ArrowRight className="ml-2 h-4 w-4" />
-                        </Link>
-                      </Button>
+                    <div
+                      className={cn(
+                        "mt-5 grid gap-2",
+                        hasEdibleItems &&
+                          "sm:grid-cols-2 xl:grid-cols-1",
+                      )}
+                    >
+                      {hasEdibleItems && (
+                        <Button
+                          asChild
+                          className="rounded-xl bg-gradient-pink text-white"
+                        >
+                          <Link to="/pantry">
+                            Open Smart Pantry
+                            <ArrowRight className="ml-2 h-4 w-4" />
+                          </Link>
+                        </Button>
+                      )}
                       <Button
                         type="button"
                         variant="outline"

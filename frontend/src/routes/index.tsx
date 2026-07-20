@@ -2,6 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { motion } from "framer-motion";
 import {
   ArrowRight,
+  Bookmark,
   BrainCircuit,
   CalendarClock,
   Check,
@@ -9,6 +10,7 @@ import {
   Leaf,
   Package,
   Receipt,
+  Share2,
   ShieldAlert,
   ShoppingBasket,
   Sparkles,
@@ -190,41 +192,39 @@ function Navbar() {
 
 function Hero() {
   return (
-    <section className="relative overflow-hidden">
+    <section className="relative overflow-hidden border-b border-border/60">
       <div className="absolute inset-0 -z-10">
         <div className="absolute left-1/2 top-0 h-[500px] w-[900px] -translate-x-1/2 bg-radial-pink opacity-60" />
 
-        <div className="animate-float absolute right-[8%] top-[20%] h-72 w-72 rounded-full bg-primary/15 blur-3xl" />
+        <div className="animate-float absolute right-[8%] top-[15%] h-72 w-72 rounded-full bg-primary/15 blur-3xl" />
 
         <div className="animate-float absolute bottom-[10%] left-[6%] h-64 w-64 rounded-full bg-primary-bright/10 blur-3xl" />
       </div>
 
-      <div className="mx-auto flex min-h-[680px] max-w-7xl items-center justify-center px-4 py-20 sm:px-6 lg:py-24">
+      <div className="mx-auto grid max-w-7xl items-center gap-12 px-4 py-16 sm:px-6 lg:grid-cols-[1fr_1.05fr] lg:gap-10 lg:py-20">
+        {/* Left: copy */}
         <motion.div
           initial={{ opacity: 0, y: 24 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.6 }}
-          className="mx-auto max-w-5xl text-center"
+          className="text-center lg:text-left"
         >
-          <div className="mx-auto mb-6 inline-flex w-fit items-center gap-2 rounded-full border border-primary/30 bg-primary/10 px-4 py-2 text-xs font-medium text-primary-soft">
+          <div className="mx-auto mb-6 inline-flex w-fit items-center gap-2 rounded-full border border-primary/30 bg-primary/10 px-4 py-2 text-xs font-medium text-primary-soft lg:mx-0">
             <Sparkles className="h-3.5 w-3.5" />
             AI-powered pantry intelligence
           </div>
 
-          <h1 className="text-4xl font-extrabold leading-[1.05] tracking-tight sm:text-5xl md:text-6xl lg:text-7xl">
-            Waste less.{" "}
-            <span className="gradient-text-pink">Save more.</span>
-            <br className="hidden sm:block" />
+          <h1 className="text-4xl font-extrabold leading-[1.05] tracking-tight text-foreground sm:text-5xl lg:text-6xl">
+            Waste less. Save more.
+            <br />
             Use what you already have.
           </h1>
 
-          <p className="mx-auto mt-6 max-w-3xl text-base leading-7 text-muted-foreground sm:text-lg sm:leading-8">
-            WasteWise AI gives your household one intelligent place to track
-            groceries, monitor expiry dates, understand consumption patterns,
-            predict waste risk, and rescue food before it goes unused.
+          <p className="mx-auto mt-6 max-w-xl text-base leading-7 text-muted-foreground sm:text-lg sm:leading-8 lg:mx-0">
+            
           </p>
 
-          <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
+          <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row lg:justify-start">
             <Link to="/register">
               <Button
                 size="lg"
@@ -246,7 +246,7 @@ function Hero() {
             </a>
           </div>
 
-          <div className="mt-8 flex flex-col items-center justify-center gap-3 text-xs text-muted-foreground sm:flex-row sm:gap-6">
+          <div className="mt-8 flex flex-col items-center justify-center gap-3 text-xs text-muted-foreground sm:flex-row sm:gap-6 lg:justify-start">
             <div className="flex items-center gap-1.5">
               <Check className="h-3.5 w-3.5 text-success" />
               Simple pantry management
@@ -261,6 +261,82 @@ function Hero() {
               <Check className="h-3.5 w-3.5 text-success" />
               Smarter grocery decisions
             </div>
+          </div>
+        </motion.div>
+
+        {/* Right: NYT-Cooking-style photo card with floating info panel */}
+        <motion.div
+          initial={{ opacity: 0, scale: 0.96 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ duration: 0.7, delay: 0.15 }}
+          className="relative mx-auto w-full max-w-xl lg:mx-0"
+        >
+          {/* small peeking photo, echoes the second plate in a cooking-mag hero */}
+          <div className="absolute -top-6 right-6 z-20 hidden h-28 w-28 overflow-hidden rounded-2xl border-4 border-background shadow-xl sm:block">
+            <img
+              src="https://images.unsplash.com/photo-1590311824865-bac58a024e51?auto=format&fit=crop&w=400&q=80"
+              alt="Clear glass jars of pantry staples"
+              className="h-full w-full object-cover"
+            />
+          </div>
+
+          <div className="relative overflow-hidden rounded-3xl border border-border shadow-glow">
+            <img
+              src="https://images.unsplash.com/photo-1580116270858-8a0d62b15426?auto=format&fit=crop&w=1200&q=80"
+              alt="A well-stocked pantry shelf"
+              className="h-[420px] w-full object-cover sm:h-[480px]"
+            />
+
+            {/* gradient scrim so the floating card stays legible over the photo */}
+            <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/70 via-black/0 to-black/0" />
+
+            {/* top-right utility icons, like a save / share bar on a recipe photo */}
+            <div className="absolute right-4 top-4 z-20 flex gap-2">
+              <button
+                type="button"
+                aria-label="Save"
+                className="grid h-9 w-9 place-items-center rounded-full bg-background/80 text-foreground backdrop-blur transition-colors hover:text-primary"
+              >
+                <Bookmark className="h-4 w-4" />
+              </button>
+
+              <button
+                type="button"
+                aria-label="Share"
+                className="grid h-9 w-9 place-items-center rounded-full bg-background/80 text-foreground backdrop-blur transition-colors hover:text-primary"
+              >
+                <Share2 className="h-4 w-4" />
+              </button>
+            </div>
+
+            {/* floating info card, the "Recipe of the Day" equivalent */}
+            <motion.div
+              initial={{ opacity: 0, y: 16 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.5, delay: 0.5 }}
+              className="absolute bottom-5 left-5 right-5 z-20 max-w-[280px] rounded-2xl border border-primary/20 bg-card/95 p-5 shadow-xl backdrop-blur-sm sm:right-auto"
+            >
+              <div className="mb-3 grid h-9 w-9 place-items-center rounded-full bg-gradient-pink text-white shadow-glow">
+                <ShieldAlert className="h-4 w-4" />
+              </div>
+
+              <div className="text-[10px] font-semibold uppercase tracking-widest text-primary-soft">
+                Waste-Risk Pick of the Day
+              </div>
+
+              <h3 className="mt-1 text-lg font-bold leading-snug text-foreground">
+                Ripe tomatoes, use within 2 days
+              </h3>
+
+              <p className="mt-1.5 text-xs leading-5 text-muted-foreground">
+                Flagged from your pantry based on purchase date and how your
+                household typically uses this item.
+              </p>
+
+              <div className="mt-3 text-[11px] font-semibold text-primary-soft">
+                Predicted by WasteWise AI
+              </div>
+            </motion.div>
           </div>
         </motion.div>
       </div>

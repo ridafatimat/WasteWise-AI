@@ -14,6 +14,7 @@ from fastapi import (
     status,
 )
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .auth import (
@@ -200,13 +201,15 @@ def register(
     db: Session = Depends(get_db),
 ):
     """
-    Register a user.
+    Register a user using one household name.
 
-    The user either creates a new household as its owner or joins an
-    existing household through a signed invite token.
+    If the household already exists, the new account joins it as a member.
+    If it does not exist, WasteWise creates it and assigns the new account
+    as its owner.
     """
 
     email = payload.email.strip().lower()
+    household_name = payload.household_name.strip()
 
     existing_user = (
         db.query(User)
@@ -227,34 +230,36 @@ def register(
     )
 
     try:
-        if payload.household_invite_token:
-            household_id = decode_household_invite_token(
-                payload.household_invite_token
+        household = (
+            db.query(Household)
+            .filter(
+                func.lower(
+                    func.trim(Household.name)
+                )
+                == household_name.lower()
             )
-            household = db.get(Household, household_id)
+            .order_by(
+                Household.created_at.asc(),
+                Household.id.asc(),
+            )
+            .first()
+        )
 
-            if household is None:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="The invited household no longer exists",
-                )
-
-            role = "member"
-            db.add(user)
-            db.flush()
-        else:
-            if not payload.household_name:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail="household_name is required",
-                )
-
+        if household is None:
             household = Household(
-                name=payload.household_name.strip(),
+                name=household_name,
             )
             role = "owner"
 
-            db.add_all([user, household])
+            db.add_all([
+                user,
+                household,
+            ])
+            db.flush()
+        else:
+            role = "member"
+
+            db.add(user)
             db.flush()
 
         membership = HouseholdMember(

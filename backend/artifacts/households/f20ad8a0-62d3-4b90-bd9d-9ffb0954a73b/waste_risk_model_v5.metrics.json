@@ -1,0 +1,7 @@
+{
+  "balanced_accuracy": 0.8333,
+  "waste_precision": 1.0,
+  "waste_recall": 0.6667,
+  "waste_f1": 0.8,
+  "roc_auc": 0.8667
+}

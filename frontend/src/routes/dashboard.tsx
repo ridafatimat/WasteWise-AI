@@ -90,15 +90,61 @@ function DashboardView() {
     queryKey: ["pantry"],
     queryFn: listPantryItems,
     retry: 0,
+    staleTime: 0,
+    refetchOnMount: "always",
   });
 
   const risks = useQuery({
     queryKey: ["risks"],
     queryFn: getWasteRisk,
     retry: 0,
+    staleTime: 0,
+    refetchOnMount: "always",
   });
 
-  const items = pantry.data ?? [];
+  const allItems = pantry.data ?? [];
+
+  /*
+   * Dashboard must only use currently usable stock.
+   * Wasted, consumed, expired, zero-quantity, and past-expiry batches
+   * remain available in History but must not appear here.
+   */
+  const items = allItems.filter((item) => {
+    const status = (item.status || "")
+      .trim()
+      .toLowerCase();
+
+    const remaining = Number(
+      item.quantity_remaining ??
+      item.quantity ??
+      item.quantity_initial ??
+      0,
+    );
+
+    const days = daysUntil(
+      item.expiry_date,
+    );
+
+    const isClosed =
+      status === "consumed" ||
+      status === "wasted" ||
+      status === "expired";
+
+    const hasNoStock =
+      !Number.isFinite(remaining) ||
+      remaining <= 0;
+
+    const isPastExpiry =
+      days !== null &&
+      days !== undefined &&
+      days < 0;
+
+    return (
+      !isClosed &&
+      !hasNoStock &&
+      !isPastExpiry
+    );
+  });
 
   const expiringSoon = items.filter((item) => {
     const days = daysUntil(item.expiry_date);
@@ -140,9 +186,23 @@ function DashboardView() {
             firstItem.product_name.localeCompare(secondItem.product_name),
           );
 
-  const riskItems = [...(risks.data ?? [])].sort(
-    (firstRisk, secondRisk) => secondRisk.risk_score - firstRisk.risk_score,
+  const activeItemIds = new Set(
+    items.map((item) => item.id),
   );
+
+  const riskItems = [
+    ...(risks.data ?? []),
+  ]
+    .filter((risk) =>
+      activeItemIds.has(
+        risk.pantry_item_id,
+      ),
+    )
+    .sort(
+      (firstRisk, secondRisk) =>
+        secondRisk.risk_score -
+        firstRisk.risk_score,
+    );
 
   const highRisk = riskItems.filter(
     (risk) => (risk.risk_band || "").toLowerCase() === "high",

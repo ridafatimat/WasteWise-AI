@@ -46,3 +46,4 @@ google-genai
 python-multipart
 Pillow
 python-dotenv
+pytest

@@ -129,6 +129,12 @@ class Household(Base):
         passive_deletes=True,
     )
 
+    receipt_jobs: Mapped[list["ReceiptJob"]] = relationship(
+        back_populates="household",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
     grocery_lists: Mapped[list["GroceryList"]] = relationship(
         back_populates="household",
         cascade="all, delete-orphan",
@@ -450,6 +456,105 @@ class ProcessedReceipt(Base):
 
     household: Mapped["Household"] = relationship(
         back_populates="processed_receipts",
+    )
+
+
+class ReceiptJob(Base):
+    """Tracks one asynchronous receipt-processing request."""
+
+    __tablename__ = "receipt_jobs"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=lambda: str(uuid.uuid4()),
+    )
+
+    household_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(
+            "households.id",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+        index=True,
+    )
+
+    file_hash: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        index=True,
+    )
+
+    original_filename: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
+    content_type: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
+    )
+
+    status: Mapped[str] = mapped_column(
+        String(24),
+        default="queued",
+        nullable=False,
+        index=True,
+    )
+
+    progress: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        nullable=False,
+    )
+
+    stage: Mapped[str] = mapped_column(
+        String(160),
+        default="Receipt queued",
+        nullable=False,
+    )
+
+    estimated_seconds_remaining: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+
+    result_data: Mapped[dict | None] = mapped_column(
+        JSON,
+        nullable=True,
+    )
+
+    error_message: Mapped[str | None] = mapped_column(
+        String(700),
+        nullable=True,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        nullable=False,
+    )
+
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        onupdate=utc_now,
+        nullable=False,
+    )
+
+    household: Mapped["Household"] = relationship(
+        back_populates="receipt_jobs",
     )
 
 

@@ -1,9 +1,16 @@
-"""Gemini-based receipt extraction and validation service."""
+"""Gemini-based receipt extraction and validation service.
+
+The original uploaded image bytes are never modified. WasteWise creates an
+in-memory optimized copy only for the Gemini request, while the frontend keeps
+showing the exact original file selected by the user.
+"""
 
 from __future__ import annotations
 
+import logging
 import mimetypes
 import os
+import time
 from datetime import date
 from io import BytesIO
 from pathlib import Path
@@ -11,7 +18,13 @@ from pathlib import Path
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
-from PIL import Image, UnidentifiedImageError
+from PIL import (
+    Image,
+    ImageFilter,
+    ImageOps,
+    ImageStat,
+    UnidentifiedImageError,
+)
 from pydantic import ValidationError
 
 from .schemas import (
@@ -21,6 +34,8 @@ from .schemas import (
 
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 
 MAX_RECEIPT_SIZE_BYTES = 10 * 1024 * 1024
@@ -41,360 +56,101 @@ EXTENSION_MIME_TYPES = {
 
 
 RECEIPT_EXTRACTION_PROMPT = """
-Analyse this Pakistani or international retail receipt and return
-structured receipt data.
-
-Extract every purchased product line from the receipt.
-
-Product extraction rules:
-
-1. Extract only actual purchased products.
-
-2. Do not treat the following as products:
-   - Merchant name
-   - Invoice number
-   - Receipt date or time
-   - Table headings
-   - Gross amount
-   - Subtotal
-   - Tax or GST
-   - Receipt total
-   - Payment amount
-   - Change
-   - Service charge
-   - Delivery charge
-   - Total product count
-   - Terms and conditions
-
-3. Keep purchased quantity separate from package size.
-
-Example:
-
-"Milk 1L | Qty 2"
-
-Means:
-
-purchased_quantity = 2
-package_size = 1
-package_unit = "l"
-
-4. For loose products sold by weight, place the measured
-weight in purchased_quantity and keep package_size null.
-
-Example:
-
-"Organic Bananas | Qty 1.53 lb"
-
-Means:
-
-purchased_quantity = 1.53
-package_size = null
-package_unit = "lb"
-
-5. For packaged products, keep the number of packages in
-purchased_quantity and the printed package size separately.
-
-Example:
-
-"Strawberries 1 lb | Qty 1"
-
-Means:
-
-purchased_quantity = 1
-package_size = 1
-package_unit = "lb"
-
-Example:
-
-"Milk 1/2 gal | Qty 1"
-
-Means:
-
-purchased_quantity = 1
-package_size = 0.5
-package_unit = "gal"
-
-6. For countable packages, store the count as package_size
-and use package_unit = "piece".
-
-Example:
-
-"Large Eggs 12 count | Qty 1"
-
-Means:
-
-purchased_quantity = 1
-package_size = 12
-package_unit = "piece"
-
-7. Do not use package size as purchased quantity.
-
-8. Do not invent unreadable receipt values. Return null when
-quantity, price, date, or package size cannot be read.
-
-9. If an item has no explicitly printed quantity, return
-purchased_quantity as null. The backend will default it to one.
-
-10. raw_name should remain close to the exact receipt text.
-
-11. product_name should be clean and human-readable. It may
-retain the brand and useful variety information, but it must
-not become a different product.
-
-12. pantry_name must be a simple generic household inventory
-name for grouping and displaying the item in the Smart Pantry.
-
-pantry_name rules:
-
-- Remove brand names.
-- Remove store-brand names.
-- Remove package sizes, weights, counts, and pack quantities.
-- Remove words such as organic, premium, large, small, value,
-  original, traditional, plain, and percentage values unless
-  they are essential to identify the food.
-- Keep a useful food distinction when it affects how the item
-  is understood or stored, such as Greek Yogurt, Chicken
-  Breast, Brown Rice, Pasta Sauce, or Frozen Chicken.
-- Do not use vague names such as Food, Grocery, Product, or
-  Snack when a more useful food name is available.
-- Use a short title-cased name.
-- pantry_name must not contain a package size.
-
-Examples:
-
-"Great Value Large Eggs 12 count"
-product_name = "Great Value Large Eggs"
-pantry_name = "Eggs"
-
-"365 Organic Milk 2% 1/2 gal"
-product_name = "365 Organic Milk 2%"
-pantry_name = "Milk"
-
-"Horizon Organic Milk 2% 1 gal"
-product_name = "Horizon Organic Milk 2%"
-pantry_name = "Milk"
-
-"Chobani Greek Yogurt Plain 5.3 oz"
-product_name = "Chobani Greek Yogurt Plain"
-pantry_name = "Greek Yogurt"
-
-"Tyson Chicken Breast 2.5 lb"
-product_name = "Tyson Chicken Breast"
-pantry_name = "Chicken Breast"
-
-"Mission Flour Tortillas 10 count"
-product_name = "Mission Flour Tortillas"
-pantry_name = "Tortillas"
-
-"Driscoll's Strawberries 1 lb"
-product_name = "Driscoll's Strawberries"
-pantry_name = "Strawberries"
-
-"Annie's Mac & Cheese Shells 6 oz"
-product_name = "Annie's Mac & Cheese Shells"
-pantry_name = "Macaroni & Cheese"
-
-"Coca-Cola 12 oz 18 Pack"
-product_name = "Coca-Cola"
-pantry_name = "Soft Drink"
-
-"Gatorade Arctic Blitz 20 oz"
-product_name = "Gatorade Arctic Blitz"
-pantry_name = "Sports Drink"
-
-"Nutella"
-product_name = "Nutella"
-pantry_name = "Hazelnut Spread"
-
-"Biskrem Duo"
-product_name = "Biskrem Duo"
-pantry_name = "Cookies"
-
-13. For misspelled or abbreviated receipt names, normalize the
-product_name only when the identity is reasonably clear.
-
-Example:
-
-"Nutelka" may be normalized to "Nutella" if the receipt context
-supports that interpretation.
-
-14. Use the appropriate three-letter currency code:
-    - PKR for Pakistani rupees
-    - USD for US dollars
-    - GBP for British pounds
-    - EUR for euros
-
-15. Mark non-food products with:
-
-is_food_item = false
-
-16. Add unclear receipt fields to uncertain_fields.
-
-17. Infer the most suitable food category and storage location.
-
-18. Use these category values only:
-
-beverage, dairy, fruit, grain, meat, snack, vegetable, other
-
-19. Use these storage-location values only:
-
-fridge, freezer, pantry, unknown
-
-Package-unit rules:
-
-20. Use only these package_unit values:
-
-g, kg, ml, l, oz, fl_oz, lb, gal, pint, quart, piece, pack,
-unknown
-
-21. Use "oz" for ordinary ounces, such as 5.3 oz or 20 oz.
-
-22. Use "fl_oz" only when the receipt specifically indicates
-fluid ounces.
-
-23. Use "lb" for pounds, including loose products sold by
-weight and packaged products labelled 1 lb or 2 lb.
-
-24. Use "gal" for gallons. Convert printed fractions such as
-1/2 gal to package_size = 0.5 and package_unit = "gal".
-
-25. Use "pint" and "quart" when those units are explicitly
-printed.
-
-26. Use "piece" for countable units such as eggs, tortillas,
-bread rolls, produce pieces, or package counts.
-
-27. Use "pack" only when the receipt identifies the purchased
-unit as a pack and the individual count cannot be represented
-more accurately as pieces.
-
-Purchase-date rules:
-
-28. Extract purchase_date only when a date is visible and
-reliably readable on the receipt.
-
-29. Format an extracted date as YYYY-MM-DD.
-
-30. When no purchase date is visible, return:
-
-purchase_date = null
-
-31. Always return:
-
-purchase_date_source = null
-
-The backend will set purchase_date_source after validating the
-extracted date.
-
-Shelf-life estimation rules:
-
-32. For every food product, estimate a conservative typical
-shelf life in days from the purchase date.
-
-33. Base the estimate on:
-    - The generic food represented by pantry_name
-    - Whether it is fresh, prepared, frozen, dried, canned,
-      packaged, or shelf-stable
-    - The selected storage location
-    - General food-storage knowledge
-
-34. Distinguish a refrigerated dairy product from a packaged
-shelf-stable product whose name contains a dairy word.
-
-For example, boxed "Macaroni & Cheese" stored in the pantry is
-a shelf-stable dry product. Do not estimate it using the shelf
-life of fresh refrigerated cheese.
-
-35. This is not a Google Search task. Do not claim that online
-information was searched.
-
-36. estimated_shelf_life_days is only an estimate and is not
-the exact manufacturer-printed expiry date.
-
-37. Use conservative estimates for fresh meat, prepared food,
-dairy, fruits, and vegetables.
-
-38. Frozen products should normally have longer estimates than
-equivalent refrigerated products.
-
-39. Shelf-stable grains, flour, snacks, canned products, and
-canned beverages may have longer pantry estimates.
-
-40. If the exact product is unclear, estimate shelf life using
-its likely category, food type, and storage location.
-
-41. expiry_confidence must be between 0 and 1.
-
-42. expiry_reason must briefly explain the estimate.
-
-Financial extraction rules:
-
-43. Extract the receipt financial summary separately from the
-purchased products.
-
-44. items_subtotal means the printed total of purchased product
-lines before tax, GST, service charges, delivery charges, or
-other charges.
-
-45. The before-tax product total may be labelled:
-    - Gross
-    - Items Total
-    - Item Amount
-    - Subtotal
-    - Total before tax
-
-46. Some receipts may label the final after-tax amount as
-"Subtotal". Do not store that final amount as items_subtotal.
-
-47. Extract these values when visible:
-    - items_subtotal
-    - tax_amount
-    - tax_rate
-    - service_charge
-    - delivery_charge
-    - other_charges
-    - discount_amount
-    - total_amount
-    - payment_amount
-    - change_amount
-
-48. tax_rate should contain the percentage number.
-
-Example:
-
-GST 15%
-
-Means:
-
-tax_rate = 15
-
-49. Use this financial equation:
-
-items_subtotal
-+ tax_amount
-+ service_charge
-+ delivery_charge
-+ other_charges
-- discount_amount
-= total_amount
-
-50. Do not include tax, GST, service charges, delivery charges,
-payment, or change as purchased products.
-
-51. Return null for financial values that are not printed or
-cannot be reliably determined.
-
-52. Return only valid structured data matching the supplied
-schema.
+Extract this retail receipt into the supplied JSON schema.
+
+GENERAL RULES
+- Extract only purchased product lines.
+- Never treat merchant details, dates, headings, subtotal, tax, total, payment,
+  change, service charges, delivery charges, discounts, or terms as products.
+- Do not invent unreadable values. Use null when a value cannot be read.
+- Keep raw_name close to the printed text.
+- product_name should be clean and human-readable.
+- pantry_name should be a short generic household name with brands, package
+  sizes, counts, weights, marketing words, and store-brand names removed.
+- Mark household, cleaning, hygiene, stationery, cosmetic, and other non-food
+  products with is_food_item=false.
+- Add uncertain values to uncertain_fields.
+
+QUANTITY AND PACKAGE RULES
+- Keep purchased_quantity separate from package_size.
+- "Milk 1L, Qty 2" means purchased_quantity=2, package_size=1, package_unit="l".
+- Loose weighted produce uses the measured weight as purchased_quantity and
+  package_size=null.
+- Countable packs such as 12 eggs use package_size=12 and package_unit="piece".
+- If no quantity is printed, use purchased_quantity=null.
+- Allowed package_unit values:
+  g, kg, ml, l, oz, fl_oz, lb, gal, pint, quart, piece, pack, unknown.
+
+PANTRY NORMALIZATION EXAMPLES
+- Great Value Large Eggs 12 count -> pantry_name="Eggs"
+- 365 Organic Milk 2% 1/2 gal -> pantry_name="Milk"
+- Chobani Greek Yogurt Plain 5.3 oz -> pantry_name="Greek Yogurt"
+- Tyson Chicken Breast 2.5 lb -> pantry_name="Chicken Breast"
+- Mission Flour Tortillas 10 count -> pantry_name="Tortillas"
+- Driscoll's Strawberries 1 lb -> pantry_name="Strawberries"
+- Annie's Mac & Cheese Shells 6 oz -> pantry_name="Macaroni & Cheese"
+- Coca-Cola 12 oz 18 Pack -> pantry_name="Soft Drink"
+- Gatorade Arctic Blitz 20 oz -> pantry_name="Sports Drink"
+- Nutella -> pantry_name="Hazelnut Spread"
+- Biskrem Duo -> pantry_name="Cookies"
+
+CLASSIFICATION
+- Allowed categories:
+  beverage, dairy, fruit, grain, meat, snack, vegetable, other.
+- Allowed storage locations:
+  fridge, freezer, pantry, unknown.
+- Infer category and storage conservatively.
+
+DATE AND CURRENCY
+- Extract purchase_date only when visible and reliable; format YYYY-MM-DD.
+- Otherwise return purchase_date=null.
+- Always return purchase_date_source=null; the backend fills it later.
+- Use PKR, USD, GBP, or EUR as appropriate.
+
+SHELF LIFE
+- For each food item, estimate a conservative typical shelf life in days from
+  purchase, based on pantry_name, whether it is fresh/frozen/dried/canned or
+  shelf-stable, and its storage location.
+- This is an estimate, not a manufacturer expiry date.
+- expiry_confidence must be between 0 and 1.
+- expiry_reason should briefly explain the estimate.
+- Do not claim to have searched the web.
+
+FINANCIALS
+- Extract items_subtotal, tax_amount, tax_rate, service_charge,
+  delivery_charge, other_charges, discount_amount, total_amount,
+  payment_amount, and change_amount when printed.
+- Financial equation:
+  items_subtotal + tax_amount + service_charge + delivery_charge
+  + other_charges - discount_amount = total_amount.
+- Do not include financial rows as products.
+
+Return only valid structured data matching the supplied schema.
 """
 
 
 class InvalidReceiptFileError(ValueError):
-    """Raised when an uploaded receipt is invalid."""
+    """Raised when the uploaded file itself is invalid."""
+
+
+class BlankReceiptImageError(ValueError):
+    """Raised when the uploaded image is blank or nearly uniform."""
+
+
+class UnreadableReceiptError(ValueError):
+    """Raised when no useful receipt content can be extracted."""
+
+
+class InvalidReceiptContentError(ValueError):
+    """Raised when the image contains no purchased product lines."""
 
 
 class ReceiptExtractionError(RuntimeError):
-    """Raised when Gemini cannot analyse a receipt."""
+    """Raised when Gemini returns unusable receipt data."""
+
+
+class ReceiptServiceUnavailableError(RuntimeError):
+    """Raised when Gemini is unavailable or unreachable."""
 
 
 def _resolve_mime_type(
@@ -414,8 +170,8 @@ def _resolve_mime_type(
 
     suffix = Path(filename).suffix.lower()
 
-    extension_mime_type = EXTENSION_MIME_TYPES.get(
-        suffix
+    extension_mime_type = (
+        EXTENSION_MIME_TYPES.get(suffix)
     )
 
     if extension_mime_type:
@@ -437,7 +193,12 @@ def _resolve_mime_type(
 def _validate_image(
     file_bytes: bytes,
 ) -> None:
-    """Confirm that the uploaded bytes contain a real image."""
+    """
+    Confirm that the uploaded bytes contain a valid, non-blank,
+    sufficiently clear receipt image.
+
+    Validation happens before Gemini is called.
+    """
 
     if not file_bytes:
         raise InvalidReceiptFileError(
@@ -450,10 +211,190 @@ def _validate_image(
         )
 
     try:
+        # First verify that the bytes represent a real image.
         with Image.open(
             BytesIO(file_bytes)
         ) as image:
             image.verify()
+
+        # Reopen because verify() closes the internal image parser.
+        with Image.open(
+            BytesIO(file_bytes)
+        ) as image:
+            image = ImageOps.exif_transpose(
+                image
+            )
+            image.load()
+
+            width, height = image.size
+
+            if width < 100 or height < 100:
+                raise InvalidReceiptFileError(
+                    "The receipt image is too small. "
+                    "Please upload a larger, clearer image."
+                )
+
+            grayscale = image.convert("L")
+
+            # Analyze a copy so the original upload remains untouched.
+            analysis_image = grayscale.copy()
+            analysis_image.thumbnail(
+                (700, 700)
+            )
+
+            statistics = ImageStat.Stat(
+                analysis_image
+            )
+
+            average_brightness = (
+                statistics.mean[0]
+            )
+
+            brightness_variation = (
+                statistics.stddev[0]
+            )
+
+            (
+                minimum_brightness,
+                maximum_brightness,
+            ) = analysis_image.getextrema()
+
+            # ---------------- Blank-image detection ----------------
+
+            nearly_uniform = (
+                brightness_variation < 2.5
+                or (
+                    maximum_brightness
+                    - minimum_brightness
+                ) < 8
+            )
+
+            nearly_white = (
+                average_brightness > 248
+                and brightness_variation < 6
+            )
+
+            nearly_black = (
+                average_brightness < 7
+                and brightness_variation < 6
+            )
+
+            if (
+                nearly_uniform
+                or nearly_white
+                or nearly_black
+            ):
+                raise BlankReceiptImageError(
+                    "The uploaded image appears to be blank. "
+                    "Please upload a clear photo of a receipt."
+                )
+
+            # ---------------- Blur detection ----------------
+            #
+            # FIND_EDGES highlights sharp text and receipt boundaries.
+            # A heavily blurred receipt produces weak edge variation.
+
+            edge_image = analysis_image.filter(
+                ImageFilter.FIND_EDGES
+            )
+
+            edge_width, edge_height = (
+                edge_image.size
+            )
+
+            # Remove artificial outer edges introduced by FIND_EDGES.
+            crop_margin_x = max(
+                1,
+                int(edge_width * 0.05),
+            )
+
+            crop_margin_y = max(
+                1,
+                int(edge_height * 0.05),
+            )
+
+            if (
+                edge_width > crop_margin_x * 2
+                and edge_height > crop_margin_y * 2
+            ):
+                edge_image = edge_image.crop(
+                    (
+                        crop_margin_x,
+                        crop_margin_y,
+                        edge_width
+                        - crop_margin_x,
+                        edge_height
+                        - crop_margin_y,
+                    )
+                )
+
+            edge_statistics = ImageStat.Stat(
+                edge_image
+            )
+
+            edge_strength = (
+                edge_statistics.mean[0]
+            )
+
+            edge_variation = (
+                edge_statistics.stddev[0]
+            )
+
+            blur_edge_threshold = float(
+                os.getenv(
+                    "RECEIPT_BLUR_EDGE_THRESHOLD",
+                    "8.0",
+                )
+            )
+
+            blur_variation_threshold = float(
+                os.getenv(
+                    "RECEIPT_BLUR_VARIATION_THRESHOLD",
+                    "18.0",
+                )
+            )
+
+            appears_blurry = (
+                edge_variation
+                < blur_edge_threshold
+                and brightness_variation
+                < blur_variation_threshold
+            )
+
+            severely_blurry = (
+                edge_strength < 3.0
+                and edge_variation < 10.0
+            )
+
+            logger.info(
+                (
+                    "Receipt quality check: size=%sx%s, "
+                    "brightness=%.2f, contrast=%.2f, "
+                    "edge_strength=%.2f, edge_variation=%.2f"
+                ),
+                width,
+                height,
+                average_brightness,
+                brightness_variation,
+                edge_strength,
+                edge_variation,
+            )
+
+            if (
+                appears_blurry
+                or severely_blurry
+            ):
+                raise UnreadableReceiptError(
+                    "The receipt image is too blurry to read reliably. "
+                    "Please upload a sharper, well-lit photo."
+                )
+
+    except (
+        BlankReceiptImageError,
+        UnreadableReceiptError,
+        InvalidReceiptFileError,
+    ):
+        raise
 
     except (
         UnidentifiedImageError,
@@ -465,15 +406,139 @@ def _validate_image(
         ) from exc
 
 
+def _prepare_image_for_gemini(
+    file_bytes: bytes,
+    mime_type: str,
+) -> tuple[bytes, str]:
+    """Create an optimized in-memory copy for Gemini."""
+
+    max_dimension = int(
+        os.getenv(
+            "RECEIPT_IMAGE_MAX_DIMENSION",
+            "2000",
+        )
+    )
+
+    jpeg_quality = int(
+        os.getenv(
+            "RECEIPT_IMAGE_JPEG_QUALITY",
+            "88",
+        )
+    )
+
+    max_dimension = max(
+        1200,
+        min(max_dimension, 3000),
+    )
+
+    jpeg_quality = max(
+        75,
+        min(jpeg_quality, 95),
+    )
+
+    try:
+        with Image.open(
+            BytesIO(file_bytes)
+        ) as image:
+            image = ImageOps.exif_transpose(
+                image
+            )
+            image.load()
+
+            width, height = image.size
+            largest_dimension = max(
+                width,
+                height,
+            )
+
+            if largest_dimension > max_dimension:
+                scale = (
+                    max_dimension
+                    / largest_dimension
+                )
+
+                image = image.resize(
+                    (
+                        max(
+                            1,
+                            round(width * scale),
+                        ),
+                        max(
+                            1,
+                            round(height * scale),
+                        ),
+                    ),
+                    Image.Resampling.LANCZOS,
+                )
+
+            # Keep small transparent PNGs as PNG.
+            if (
+                mime_type == "image/png"
+                and len(file_bytes) <= 1_500_000
+                and image.mode in {"RGBA", "LA"}
+            ):
+                output = BytesIO()
+
+                image.save(
+                    output,
+                    format="PNG",
+                    optimize=True,
+                )
+
+                return (
+                    output.getvalue(),
+                    "image/png",
+                )
+
+            if image.mode not in {"RGB", "L"}:
+                background = Image.new(
+                    "RGB",
+                    image.size,
+                    "white",
+                )
+
+                if "A" in image.getbands():
+                    background.paste(
+                        image,
+                        mask=image.getchannel("A"),
+                    )
+                else:
+                    background.paste(image)
+
+                image = background
+
+            elif image.mode == "L":
+                image = image.convert("RGB")
+
+            output = BytesIO()
+
+            image.save(
+                output,
+                format="JPEG",
+                quality=jpeg_quality,
+                optimize=True,
+                progressive=True,
+            )
+
+            return (
+                output.getvalue(),
+                "image/jpeg",
+            )
+
+    except Exception as exc:
+        logger.warning(
+            "Receipt image optimization failed; "
+            "using original image: %s",
+            exc,
+        )
+
+        return file_bytes, mime_type
+
+
 def _set_purchase_date_source(
     receipt_data: ReceiptData,
 ) -> None:
-    """
-    Validate the extracted purchase date.
-
-    If the receipt does not contain a valid ISO date, today's
-    upload date is used.
-    """
+    """Validate purchase date or use the upload date."""
 
     if receipt_data.purchase_date:
         try:
@@ -506,18 +571,72 @@ def _set_purchase_date_source(
     )
 
 
+def _validate_extracted_receipt(
+    receipt_data: ReceiptData,
+) -> None:
+    """Confirm that Gemini extracted meaningful receipt content."""
+
+    items = receipt_data.items or []
+
+    meaningful_items = [
+        item
+        for item in items
+        if (
+            (
+                getattr(
+                    item,
+                    "raw_name",
+                    None,
+                )
+                and item.raw_name.strip()
+            )
+            or (
+                getattr(
+                    item,
+                    "product_name",
+                    None,
+                )
+                and item.product_name.strip()
+            )
+        )
+    ]
+
+    merchant_name = (
+        receipt_data.merchant_name.strip()
+        if receipt_data.merchant_name
+        else ""
+    )
+
+    has_financial_information = any(
+        value is not None
+        for value in (
+            receipt_data.items_subtotal,
+            receipt_data.tax_amount,
+            receipt_data.total_amount,
+            receipt_data.payment_amount,
+        )
+    )
+
+    if not meaningful_items:
+        if (
+            not merchant_name
+            and not has_financial_information
+        ):
+            raise UnreadableReceiptError(
+                "No readable receipt content was found. "
+                "Please upload a sharper, well-lit receipt image."
+            )
+
+        raise InvalidReceiptContentError(
+            "The image was read, but no purchased products "
+            "were found. Please upload a complete shopping receipt."
+        )
+
+
 def validate_receipt_financials(
     receipt: ReceiptData,
 ) -> ReceiptFinancialValidation:
-    """
-    Reconcile the printed subtotal, taxes, charges, discounts,
-    and final receipt total.
-
-    The printed subtotal is preferred for the final financial
-    equation. The sum of extracted product lines is validated
-    separately because per-line rounding can create a small
-    difference.
-    """
+    """Validate receipt subtotal, tax, charges, and total."""
 
     known_line_totals = [
         float(item.line_total)
@@ -538,13 +657,15 @@ def validate_receipt_financials(
 
     printed_subtotal = (
         float(receipt.items_subtotal)
-        if receipt.items_subtotal is not None
+        if receipt.items_subtotal
+        is not None
         else None
     )
 
     receipt_total = (
         float(receipt.total_amount)
-        if receipt.total_amount is not None
+        if receipt.total_amount
+        is not None
         else None
     )
 
@@ -553,12 +674,10 @@ def validate_receipt_financials(
         or "PKR"
     ).strip().upper()
 
-    # Smaller-unit currencies and PKR receipts commonly need
-    # a one-unit tolerance. Decimal currencies use two cents
-    # as the minimum tolerance.
     base_tolerance = (
         1.0
-        if currency in {
+        if currency
+        in {
             "PKR",
             "JPY",
             "KRW",
@@ -617,13 +736,15 @@ def validate_receipt_financials(
                     "exceeds the allowed tolerance."
                 )
 
-    # Prefer the subtotal printed by the merchant. Only fall
-    # back to line-item totals when no subtotal is available.
     if printed_subtotal is not None:
-        effective_subtotal = printed_subtotal
+        effective_subtotal = (
+            printed_subtotal
+        )
 
     elif known_line_totals:
-        effective_subtotal = line_items_total
+        effective_subtotal = (
+            line_items_total
+        )
 
         notes.append(
             "A printed subtotal was unavailable, so the "
@@ -757,15 +878,60 @@ def validate_receipt_financials(
     )
 
 
+def _classify_gemini_failure(
+    exc: Exception,
+) -> ReceiptExtractionError:
+    """Convert Gemini errors into safe user-facing errors."""
+
+    message = str(exc).lower()
+
+    timeout_markers = (
+        "timeout",
+        "timed out",
+        "deadline exceeded",
+    )
+
+    unavailable_markers = (
+        "service unavailable",
+        "temporarily unavailable",
+        "connection",
+        "network",
+        "503",
+        "429",
+        "resource exhausted",
+        "rate limit",
+    )
+
+    if any(
+        marker in message
+        for marker in timeout_markers
+    ):
+        return ReceiptServiceUnavailableError(
+            "The receipt AI service took too long to respond. "
+            "Please try again shortly."
+        )
+
+    if any(
+        marker in message
+        for marker in unavailable_markers
+    ):
+        return ReceiptServiceUnavailableError(
+            "The receipt AI service is temporarily unavailable. "
+            "Please try again shortly."
+        )
+
+    return ReceiptExtractionError(
+        "The receipt could not be analysed. "
+        "Please try again with a clearer image."
+    )
+
+
 def extract_receipt_data_from_bytes(
     file_bytes: bytes,
     filename: str,
     declared_content_type: str | None = None,
 ) -> ReceiptData:
-    """
-    Send receipt bytes to Gemini and return validated
-    structured receipt information.
-    """
+    """Send receipt bytes to Gemini and validate the result."""
 
     _validate_image(
         file_bytes
@@ -773,7 +939,9 @@ def extract_receipt_data_from_bytes(
 
     mime_type = _resolve_mime_type(
         filename=filename,
-        declared_content_type=declared_content_type,
+        declared_content_type=(
+            declared_content_type
+        ),
     )
 
     api_key = os.getenv(
@@ -781,8 +949,13 @@ def extract_receipt_data_from_bytes(
     )
 
     if not api_key:
-        raise ReceiptExtractionError(
-            "GEMINI_API_KEY is missing from backend/.env."
+        logger.error(
+            "GEMINI_API_KEY is missing."
+        )
+
+        raise ReceiptServiceUnavailableError(
+            "Receipt scanning is temporarily unavailable. "
+            "Please contact support if the problem continues."
         )
 
     model_name = os.getenv(
@@ -790,48 +963,103 @@ def extract_receipt_data_from_bytes(
     )
 
     if not model_name:
-        raise ReceiptExtractionError(
-            "GEMINI_MODEL is missing from backend/.env."
+        logger.error(
+            "GEMINI_MODEL is missing."
         )
+
+        raise ReceiptServiceUnavailableError(
+            "Receipt scanning is temporarily unavailable. "
+            "Please contact support if the problem continues."
+        )
+
+    (
+        processing_bytes,
+        processing_mime_type,
+    ) = _prepare_image_for_gemini(
+        file_bytes,
+        mime_type,
+    )
+
+    logger.info(
+        "Receipt image prepared for Gemini: "
+        "original=%d bytes, optimized=%d bytes, mime=%s",
+        len(file_bytes),
+        len(processing_bytes),
+        processing_mime_type,
+    )
 
     client = genai.Client(
         api_key=api_key
     )
 
+    request_started = (
+        time.perf_counter()
+    )
+
     try:
-        response = client.models.generate_content(
-            model=model_name,
-            contents=[
-                types.Part.from_bytes(
-                    data=file_bytes,
-                    mime_type=mime_type,
+        response = (
+            client.models.generate_content(
+                model=model_name,
+                contents=[
+                    types.Part.from_bytes(
+                        data=processing_bytes,
+                        mime_type=(
+                            processing_mime_type
+                        ),
+                    ),
+                    RECEIPT_EXTRACTION_PROMPT,
+                ],
+                config=(
+                    types.GenerateContentConfig(
+                        response_mime_type=(
+                            "application/json"
+                        ),
+                        response_json_schema=(
+                            ReceiptData
+                            .model_json_schema()
+                        ),
+                        temperature=0,
+                        max_output_tokens=int(
+                            os.getenv(
+                                "RECEIPT_MAX_OUTPUT_TOKENS",
+                                "8192",
+                            )
+                        ),
+                    )
                 ),
-                RECEIPT_EXTRACTION_PROMPT,
-            ],
-            config=types.GenerateContentConfig(
-                response_mime_type=(
-                    "application/json"
-                ),
-                response_json_schema=(
-                    ReceiptData.model_json_schema()
-                ),
-                temperature=0,
-                max_output_tokens=4096,
-            ),
+            )
         )
 
     except Exception as exc:
-        raise ReceiptExtractionError(
-            "Gemini could not analyse the receipt. "
-            "Please try again."
+        logger.exception(
+            "Gemini receipt extraction failed "
+            "after %.2f seconds",
+            (
+                time.perf_counter()
+                - request_started
+            ),
+        )
+
+        raise _classify_gemini_failure(
+            exc
         ) from exc
 
     finally:
         client.close()
 
+    logger.info(
+        "Gemini receipt extraction completed "
+        "in %.2f seconds",
+        (
+            time.perf_counter()
+            - request_started
+        ),
+    )
+
     if not response.text:
-        raise ReceiptExtractionError(
-            "Gemini returned an empty receipt response."
+        raise UnreadableReceiptError(
+            "No readable receipt content was found. "
+            "Please upload a sharper, well-lit receipt image."
         )
 
     try:
@@ -842,10 +1070,20 @@ def extract_receipt_data_from_bytes(
         )
 
     except ValidationError as exc:
+        logger.warning(
+            "Gemini returned invalid structured "
+            "receipt data: %s",
+            exc,
+        )
+
         raise ReceiptExtractionError(
-            "Gemini returned receipt data in an "
-            "invalid format."
+            "The receipt was detected, but its information "
+            "could not be processed safely. Please try again."
         ) from exc
+
+    _validate_extracted_receipt(
+        receipt_data
+    )
 
     _set_purchase_date_source(
         receipt_data

@@ -38,6 +38,12 @@ export type ReceiptExpirySource =
   | "gemini_estimate"
   | "category_default";
 
+export type ReceiptJobStatus =
+  | "queued"
+  | "processing"
+  | "completed"
+  | "failed";
+
 export interface ReceiptItem {
   raw_name: string;
   product_name: string;
@@ -117,4 +123,17 @@ export interface ReceiptProcessResponse
   extends ReceiptScanResponse {
   summary: ReceiptProcessSummary;
   pantry_changes: PantryReceiptChange[];
+}
+
+export interface ReceiptJobResponse {
+  job_id: string;
+  status: ReceiptJobStatus;
+  progress: number;
+  stage: string;
+  estimated_seconds_remaining: number | null;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  result: ReceiptProcessResponse | null;
+  error: string | null;
 }

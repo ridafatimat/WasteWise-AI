@@ -41,11 +41,15 @@ import { AppShell } from "@/components/AppShell";
 import { RequireAuth } from "@/components/RequireAuth";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { uploadReceipt } from "@/services/api";
+import {
+  startReceiptJob,
+  waitForReceiptJob,
+} from "@/services/api";
 import { extractApiError } from "@/services/api/client";
 import type {
   PantryReceiptChange,
   ReceiptItem,
+  ReceiptJobResponse,
   ReceiptProcessResponse,
 } from "@/types/receipt";
 
@@ -172,8 +176,12 @@ function ReceiptsPage() {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [job, setJob] =
+    useState<ReceiptJobResponse | null>(null);
   const [result, setResult] =
     useState<ReceiptProcessResponse | null>(null);
+  const abortControllerRef =
+    useRef<AbortController | null>(null);
 
   useEffect(() => {
     return () => {
@@ -184,11 +192,28 @@ function ReceiptsPage() {
   }, [previewUrl]);
 
   const mutation = useMutation({
-    mutationFn: async (selectedFile: File) =>
-      uploadReceipt(
-        selectedFile,
-        setUploadProgress,
-      ),
+    mutationFn: async (selectedFile: File) => {
+      const controller =
+        new AbortController();
+
+      abortControllerRef.current =
+        controller;
+
+      const createdJob =
+        await startReceiptJob(
+          selectedFile,
+          setUploadProgress,
+        );
+
+      setJob(createdJob);
+
+      return waitForReceiptJob(
+        createdJob.job_id,
+        setJob,
+        controller.signal,
+      );
+    },
+
     onSuccess: async (data) => {
       setResult(data);
 
@@ -197,6 +222,24 @@ function ReceiptsPage() {
         data.pantry_changes.some(
           (change) => change.action === "created",
         );
+
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["pantry"],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["risks"],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["dashboard"],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["rescue-mode"],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["grocery-list"],
+        }),
+      ]);
 
       if (!hasEdibleItems) {
         toast.info(
@@ -210,13 +253,15 @@ function ReceiptsPage() {
           data.summary.items_created === 1 ? "" : "es"
         } added.`,
       );
-
-      await queryClient.invalidateQueries({
-        queryKey: ["pantry"],
-      });
     },
+
     onError: (error) => {
       toast.error(extractApiError(error));
+    },
+
+    onSettled: () => {
+      abortControllerRef.current =
+        null;
     },
   });
 
@@ -233,8 +278,11 @@ function ReceiptsPage() {
       URL.revokeObjectURL(previewUrl);
     }
 
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
     setFile(null);
     setPreviewUrl(null);
+    setJob(null);
     setResult(null);
     setUploadProgress(0);
     mutation.reset();
@@ -267,6 +315,7 @@ function ReceiptsPage() {
     setPreviewUrl(
       URL.createObjectURL(selectedFile),
     );
+    setJob(null);
     setResult(null);
     setUploadProgress(0);
     mutation.reset();
@@ -306,6 +355,7 @@ function ReceiptsPage() {
       return;
     }
 
+    setJob(null);
     setResult(null);
     setUploadProgress(0);
     mutation.mutate(file);
@@ -514,7 +564,7 @@ function ReceiptsPage() {
                   {isProcessing ? (
                     <>
                       <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Reading receipt and creating batches…
+                      Processing receipt in background…
                     </>
                   ) : (
                     <>
@@ -526,41 +576,10 @@ function ReceiptsPage() {
                 </Button>
 
                 {isProcessing && (
-                  <motion.div
-                    initial={{ opacity: 0, y: 8 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="mt-4 overflow-hidden rounded-2xl border border-primary/25 bg-primary/[0.05] p-4"
-                  >
-                    <div className="flex items-center justify-between gap-3 text-xs">
-                      <span className="flex items-center gap-2 font-semibold text-primary">
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        Processing receipt
-                      </span>
-                      <span className="text-muted-foreground">
-                        {uploadProgress < 100
-                          ? `${uploadProgress}% uploaded`
-                          : "AI analysis in progress"}
-                      </span>
-                    </div>
-
-                    <div className="mt-3 h-2 overflow-hidden rounded-full bg-background/80">
-                      <motion.div
-                        className="h-full rounded-full bg-gradient-pink"
-                        animate={{
-                          width:
-                            uploadProgress < 100
-                              ? `${uploadProgress}%`
-                              : "100%",
-                        }}
-                        transition={{ duration: 0.25 }}
-                      />
-                    </div>
-
-                    <p className="mt-3 text-xs leading-5 text-muted-foreground">
-                      Detailed receipts may take a little longer. Keep this
-                      page open while WasteWise creates the pantry batches.
-                    </p>
-                  </motion.div>
+                  <ReceiptJobProgress
+                    job={job}
+                    uploadProgress={uploadProgress}
+                  />
                 )}
 
                 <div className="mt-5 grid gap-2 sm:grid-cols-3">
@@ -984,6 +1003,154 @@ function ReceiptsPage() {
         </div>
       </AppShell>
     </RequireAuth>
+  );
+}
+
+
+function ReceiptJobProgress({
+  job,
+  uploadProgress,
+}: {
+  job: ReceiptJobResponse | null;
+  uploadProgress: number;
+}) {
+  const progress = Math.max(
+    0,
+    Math.min(
+      100,
+      job?.progress ??
+        Math.min(
+          uploadProgress,
+          10,
+        ),
+    ),
+  );
+
+  const stage =
+    job?.stage ??
+    (
+      uploadProgress < 100
+        ? "Uploading receipt"
+        : "Creating background job"
+    );
+
+  const remaining =
+    job?.estimated_seconds_remaining;
+
+  const remainingLabel =
+    typeof remaining === "number" &&
+    remaining > 0
+      ? remaining >= 60
+        ? `About ${Math.ceil(
+            remaining / 60,
+          )} min remaining`
+        : `About ${remaining} sec remaining`
+      : progress >= 100
+        ? "Finishing now"
+        : "Estimating remaining time…";
+
+  const circumference =
+    2 * Math.PI * 42;
+
+  const dashOffset =
+    circumference -
+    (
+      progress / 100
+    ) * circumference;
+
+  return (
+    <motion.div
+      initial={{
+        opacity: 0,
+        y: 8,
+      }}
+      animate={{
+        opacity: 1,
+        y: 0,
+      }}
+      className="mt-4 overflow-hidden rounded-2xl border border-primary/25 bg-primary/[0.05] p-4 sm:p-5"
+    >
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
+        <div className="relative mx-auto h-24 w-24 shrink-0 sm:mx-0">
+          <svg
+            viewBox="0 0 100 100"
+            className="-rotate-90"
+            aria-label={`${progress}% complete`}
+          >
+            <circle
+              cx="50"
+              cy="50"
+              r="42"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="8"
+              className="text-background/90"
+            />
+
+            <motion.circle
+              cx="50"
+              cy="50"
+              r="42"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="8"
+              strokeLinecap="round"
+              className="text-primary"
+              strokeDasharray={
+                circumference
+              }
+              animate={{
+                strokeDashoffset:
+                  dashOffset,
+              }}
+              transition={{
+                duration: 0.35,
+              }}
+            />
+          </svg>
+
+          <div className="absolute inset-0 grid place-items-center">
+            <div className="text-center">
+              <p className="text-xl font-bold tabular-nums">
+                {progress}%
+              </p>
+              <p className="text-[9px] uppercase tracking-wider text-muted-foreground">
+                complete
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 font-semibold text-primary">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            {stage}
+          </div>
+
+          <p className="mt-2 text-sm text-foreground">
+            {remainingLabel}
+          </p>
+
+          <div className="mt-3 h-2 overflow-hidden rounded-full bg-background/80">
+            <motion.div
+              className="h-full rounded-full bg-gradient-pink"
+              animate={{
+                width:
+                  `${progress}%`,
+              }}
+              transition={{
+                duration: 0.35,
+              }}
+            />
+          </div>
+
+          <p className="mt-3 text-xs leading-5 text-muted-foreground">
+            WasteWise is reading the receipt, validating the items,
+            and updating Smart Pantry in the background.
+          </p>
+        </div>
+      </div>
+    </motion.div>
   );
 }
 

@@ -43,6 +43,7 @@ const BENEFITS = [
   "Understand your household waste patterns",
 ];
 
+
 function BrandMark() {
   return (
     <Link to="/" className="inline-flex items-center gap-3">
@@ -103,7 +104,13 @@ function RegisterPage() {
     setLoading(true);
 
     try {
-      await apiRegister(form);
+      await apiRegister({
+        name: form.name.trim(),
+        email: form.email.trim(),
+        password: form.password,
+        household_name:
+          form.household_name.trim(),
+      });
 
       try {
         await login(form.email, form.password);
@@ -203,7 +210,7 @@ function RegisterPage() {
 
               <div className="mt-2 lg:mt-8">
                 <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.035] px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-white/45">
-                  Create your household
+                  Household setup
                 </div>
 
                 <h2 className="mt-4 text-3xl font-black tracking-[-0.035em]">
@@ -211,45 +218,50 @@ function RegisterPage() {
                 </h2>
 
                 <p className="mt-2 text-sm leading-6 text-white/45">
-                  Set up your account and begin rescuing food today.
+                  Enter your household name. If it already exists, you will join it; otherwise WasteWise will create it for you.
                 </p>
               </div>
 
               <form onSubmit={onSubmit} className="mt-8 space-y-5">
-                <div className="grid gap-5 sm:grid-cols-2">
-                  <FormField
+                <FormField
+                  id="name"
+                  label="Your name"
+                  icon={User}
+                  error={fieldErrors.name}
+                >
+                  <Input
                     id="name"
-                    label="Your name"
-                    icon={User}
-                    error={fieldErrors.name}
-                  >
-                    <Input
-                      id="name"
-                      type="text"
-                      autoComplete="name"
-                      value={form.name}
-                      onChange={set("name")}
-                      placeholder="Alex"
-                      className="h-12 rounded-xl border-white/10 bg-black/25 pl-10 text-white placeholder:text-white/25 focus-visible:ring-[#f72585]/35"
-                    />
-                  </FormField>
+                    type="text"
+                    autoComplete="name"
+                    required
+                    value={form.name}
+                    onChange={set("name")}
+                    placeholder="Alex"
+                    className="h-12 rounded-xl border-white/10 bg-black/25 pl-10 text-white placeholder:text-white/25 focus-visible:ring-[#f72585]/35"
+                  />
+                </FormField>
 
-                  <FormField
+                <FormField
+                  id="household_name"
+                  label="Household name"
+                  icon={Home}
+                  error={fieldErrors.household_name}
+                >
+                  <Input
                     id="household_name"
-                    label="Household name"
-                    icon={Home}
-                    error={fieldErrors.household_name}
-                  >
-                    <Input
-                      id="household_name"
-                      type="text"
-                      value={form.household_name}
-                      onChange={set("household_name")}
-                      placeholder="Our home"
-                      className="h-12 rounded-xl border-white/10 bg-black/25 pl-10 text-white placeholder:text-white/25 focus-visible:ring-[#f72585]/35"
-                    />
-                  </FormField>
-                </div>
+                    type="text"
+                    required
+                    value={form.household_name}
+                    onChange={set("household_name")}
+                    placeholder="Rida's House"
+                    className="h-12 rounded-xl border-white/10 bg-black/25 pl-10 text-white placeholder:text-white/25 focus-visible:ring-[#f72585]/35"
+                  />
+                </FormField>
+
+                <p className="-mt-2 text-xs leading-5 text-white/35">
+                  Existing household name: join as a member. New household
+                  name: create it as the owner.
+                </p>
 
                 <FormField
                   id="email"

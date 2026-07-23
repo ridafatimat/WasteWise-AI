@@ -90,48 +90,27 @@ class RegisterRequest(BaseModel):
         max_length=128,
     )
 
-    household_name: str | None = Field(
-        default=None,
+    household_name: str = Field(
         min_length=1,
         max_length=120,
         description=(
-            "Required when creating a new household. "
-            "Leave empty when joining through an invite."
-        ),
-    )
-
-    household_invite_token: str | None = Field(
-        default=None,
-        min_length=20,
-        description=(
-            "Required when joining an existing household. "
-            "Leave empty when creating a new household."
+            "If this household name already exists, the user joins it "
+            "as a member. Otherwise a new household is created and the "
+            "user becomes its owner."
         ),
     )
 
     @model_validator(mode="after")
-    def validate_household_choice(self):
-        has_household_name = bool(
-            self.household_name and self.household_name.strip()
-        )
-        has_invite_token = bool(
-            self.household_invite_token
-            and self.household_invite_token.strip()
-        )
+    def normalize_registration_values(self):
+        self.name = self.name.strip()
+        self.email = self.email.strip().lower()
+        self.household_name = self.household_name.strip()
 
-        if has_household_name == has_invite_token:
-            raise ValueError(
-                "Provide exactly one of household_name or "
-                "household_invite_token"
-            )
+        if not self.name:
+            raise ValueError("name cannot be empty")
 
-        if self.household_name is not None:
-            self.household_name = self.household_name.strip()
-
-        if self.household_invite_token is not None:
-            self.household_invite_token = (
-                self.household_invite_token.strip()
-            )
+        if not self.household_name:
+            raise ValueError("household_name cannot be empty")
 
         return self
 
@@ -577,6 +556,35 @@ class ReceiptProcessResponse(BaseModel):
 
     summary: ReceiptProcessSummary
     pantry_changes: list[PantryReceiptChange]
+
+
+ReceiptJobStatusValue = Literal[
+    "queued",
+    "processing",
+    "completed",
+    "failed",
+]
+
+
+class ReceiptJobCreatedResponse(BaseModel):
+    job_id: str
+    status: ReceiptJobStatusValue
+    progress: int = Field(ge=0, le=100)
+    stage: str
+    estimated_seconds_remaining: int | None = Field(default=None, ge=0)
+
+
+class ReceiptJobStatusResponse(BaseModel):
+    job_id: str
+    status: ReceiptJobStatusValue
+    progress: int = Field(ge=0, le=100)
+    stage: str
+    estimated_seconds_remaining: int | None = Field(default=None, ge=0)
+    created_at: datetime
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    result: ReceiptProcessResponse | None = None
+    error: str | None = None
 
 # ============================================================
 # Grocery-list and meal-planning schemas

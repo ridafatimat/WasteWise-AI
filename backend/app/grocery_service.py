@@ -996,24 +996,61 @@ def add_meal_plan(
     original_request: str,
     parsed: dict,
 ) -> GroceryList:
+    """Replace the current planned recipe with the newly requested recipe.
+
+    WasteWise keeps one active AI meal plan per active grocery list. Without
+    replacing older meal plans, ingredients from previous dishes continue to
+    accumulate and appear inside the next recipe's grocery recommendations.
+    Manual grocery items and rule-based consumption recommendations are not
+    affected.
+    """
+
     if grocery_list.status == GroceryListStatus.completed:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="A completed grocery list cannot be changed",
         )
 
+    cleaned_request = " ".join(original_request.strip().split())
+    if len(cleaned_request) < 3:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Please enter a meal or recipe to plan",
+        )
+
+    ingredients = parsed.get("ingredients") or []
+    if not isinstance(ingredients, list) or not ingredients:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="The generated recipe did not contain any ingredients",
+        )
+
+    # Keep only the newest requested recipe. This prevents ingredients from
+    # older dishes being merged into a later request such as noodles.
+    (
+        db.query(MealPlan)
+        .filter(MealPlan.grocery_list_id == grocery_list.id)
+        .delete(synchronize_session=False)
+    )
+    db.flush()
+
     meal = MealPlan(
-        grocery_list=grocery_list,
-        original_request=original_request.strip(),
-        dish_name=parsed["dish_name"],
-        servings=parsed["servings"],
-        times=parsed["times"],
-        recipe_source=parsed["recipe_source"],
-        ingredients=parsed["ingredients"],
+        grocery_list_id=grocery_list.id,
+        original_request=cleaned_request,
+        dish_name=str(parsed["dish_name"]).strip(),
+        servings=int(parsed["servings"]),
+        times=int(parsed["times"]),
+        recipe_source=str(parsed["recipe_source"]),
+        ingredients=ingredients,
         assumptions=parsed.get("assumptions", []),
     )
     db.add(meal)
-    db.commit()
+
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
     return regenerate_grocery_list(
         db,

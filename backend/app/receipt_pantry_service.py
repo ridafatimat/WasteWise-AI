@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 from datetime import date, timedelta
 
 from sqlalchemy.exc import IntegrityError
@@ -1041,6 +1042,23 @@ def process_receipt_into_pantry(
             )
 
             created_count += 1
+
+            # Temporary production-readiness test:
+            # When enabled, fail after the second food item has been added
+            # to the current transaction. The outer exception handler must
+            # roll back every pantry item, ML training sample, and receipt
+            # record created during this request.
+            if (
+                os.getenv(
+                    "SIMULATE_RECEIPT_DB_FAILURE",
+                    "false",
+                ).lower()
+                == "true"
+                and created_count == 2
+            ):
+                raise RuntimeError(
+                    "Simulated receipt database failure."
+                )
 
             changes.append(
                 PantryReceiptChange(
